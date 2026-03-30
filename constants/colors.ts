@@ -1,0 +1,28 @@
+export const Colors = {
+  primary: '#4CAF50',
+  primaryDark: '#388E3C',
+  primaryLight: '#C8E6C9',
+  secondary: '#2196F3',
+  background: '#F5F5F5',
+  surface: '#FFFFFF',
+  text: '#212121',
+  textSecondary: '#757575',
+  textDisabled: '#BDBDBD',
+  border: '#E0E0E0',
+  success: '#4CAF50',
+  warning: '#FF9800',
+  danger: '#F44336',
+  white: '#FFFFFF',
+  black: '#000000',
+
+  goalColors: [
+    '#4CAF50',
+    '#2196F3',
+    '#FF9800',
+    '#9C27B0',
+    '#F44336',
+    '#00BCD4',
+    '#FF5722',
+    '#607D8B',
+  ],
+};
