@@ -9,9 +9,12 @@ import {
   ScrollView,
   Alert,
   Platform,
+  ActivityIndicator,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { format, parseISO } from 'date-fns';
 import { useHealthStore } from '../../store';
+import { useAuthStore } from '../../store/auth';
 import { Colors } from '../../constants/colors';
 import { formatTime, parseTimeInput } from '../../utils/date';
 import { requestNotificationPermissions, rescheduleAllGoalNotifications } from '../../utils/notifications';
@@ -20,6 +23,11 @@ export default function SettingsScreen() {
   const settings = useHealthStore((s) => s.settings);
   const updateSettings = useHealthStore((s) => s.updateSettings);
   const goals = useHealthStore((s) => s.goals);
+  const syncing = useHealthStore((s) => s.syncing);
+  const lastSyncedAt = useHealthStore((s) => s.lastSyncedAt);
+  const pullFromRemote = useHealthStore((s) => s.pullFromRemote);
+
+  const { user, signOut } = useAuthStore();
 
   const [editingTime, setEditingTime] = useState(false);
   const [timeInput, setTimeInput] = useState(settings.defaultEndOfDayReminderTime);
@@ -27,11 +35,8 @@ export default function SettingsScreen() {
   function saveTime() {
     const parsed = parseTimeInput(timeInput);
     if (!parsed) {
-      if (Platform.OS === 'web') {
-        alert('Invalid time. Use HH:MM format (e.g. 20:00)');
-      } else {
-        Alert.alert('Invalid Time', 'Please enter time in HH:MM format (e.g. 20:00)');
-      }
+      if (Platform.OS === 'web') alert('Invalid time. Use HH:MM (e.g. 20:00)');
+      else Alert.alert('Invalid Time', 'Please enter time in HH:MM format (e.g. 20:00)');
       return;
     }
     updateSettings({ defaultEndOfDayReminderTime: parsed });
@@ -55,9 +60,83 @@ export default function SettingsScreen() {
     }
   }
 
+  function handleSignOut() {
+    if (Platform.OS === 'web') {
+      if (window.confirm('Sign out? Your data is saved to the cloud.')) signOut();
+    } else {
+      Alert.alert('Sign Out', 'Your data is saved to the cloud and will sync back when you sign in again.', [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Sign Out', style: 'destructive', onPress: signOut },
+      ]);
+    }
+  }
+
+  function handleManualSync() {
+    if (user) pullFromRemote(user.id);
+  }
+
+  const lastSyncDisplay = lastSyncedAt
+    ? format(parseISO(lastSyncedAt), 'MMM d, h:mm a')
+    : 'Never';
+
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-      {/* Notifications section */}
+
+      {/* Account */}
+      <Text style={styles.sectionLabel}>Account</Text>
+      <View style={styles.card}>
+        <View style={styles.row}>
+          <View style={styles.rowLeft}>
+            <View style={styles.avatarCircle}>
+              <Ionicons name="person" size={18} color={Colors.white} />
+            </View>
+            <View>
+              <Text style={styles.rowLabel}>{user?.email ?? 'Signed in'}</Text>
+              <Text style={styles.rowSub}>Logged in</Text>
+            </View>
+          </View>
+        </View>
+
+        <View style={styles.divider} />
+
+        <TouchableOpacity style={styles.row} onPress={handleSignOut}>
+          <View style={styles.rowLeft}>
+            <Ionicons name="log-out-outline" size={20} color={Colors.danger} />
+            <Text style={[styles.rowLabel, { color: Colors.danger }]}>Sign Out</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={16} color={Colors.textDisabled} />
+        </TouchableOpacity>
+      </View>
+
+      {/* Sync */}
+      <Text style={styles.sectionLabel}>Sync</Text>
+      <View style={styles.card}>
+        <View style={styles.row}>
+          <View style={styles.rowLeft}>
+            <Ionicons
+              name={syncing ? 'sync' : 'cloud-done-outline'}
+              size={20}
+              color={syncing ? Colors.primary : Colors.success}
+            />
+            <View>
+              <Text style={styles.rowLabel}>{syncing ? 'Syncing…' : 'Synced'}</Text>
+              <Text style={styles.rowSub}>Last sync: {lastSyncDisplay}</Text>
+            </View>
+          </View>
+          <TouchableOpacity
+            style={[styles.syncBtn, syncing && styles.syncBtnDisabled]}
+            onPress={handleManualSync}
+            disabled={syncing}
+          >
+            {syncing
+              ? <ActivityIndicator size="small" color={Colors.primary} />
+              : <Ionicons name="refresh" size={18} color={Colors.primary} />
+            }
+          </TouchableOpacity>
+        </View>
+      </View>
+
+      {/* Notifications */}
       <Text style={styles.sectionLabel}>Notifications</Text>
       <View style={styles.card}>
         <View style={styles.row}>
@@ -79,10 +158,8 @@ export default function SettingsScreen() {
           <View style={styles.rowLeft}>
             <Ionicons name="time-outline" size={20} color={Colors.text} />
             <View>
-              <Text style={styles.rowLabel}>Default End-of-Day Reminder</Text>
-              <Text style={styles.rowSubtext}>
-                Applied to new goals unless overridden
-              </Text>
+              <Text style={styles.rowLabel}>Default End-of-Day Time</Text>
+              <Text style={styles.rowSub}>Applied to new goals unless overridden</Text>
             </View>
           </View>
           {editingTime ? (
@@ -106,21 +183,16 @@ export default function SettingsScreen() {
           ) : (
             <TouchableOpacity
               style={styles.timeDisplay}
-              onPress={() => {
-                setTimeInput(settings.defaultEndOfDayReminderTime);
-                setEditingTime(true);
-              }}
+              onPress={() => { setTimeInput(settings.defaultEndOfDayReminderTime); setEditingTime(true); }}
             >
-              <Text style={styles.timeDisplayText}>
-                {formatTime(settings.defaultEndOfDayReminderTime)}
-              </Text>
+              <Text style={styles.timeDisplayText}>{formatTime(settings.defaultEndOfDayReminderTime)}</Text>
               <Ionicons name="pencil" size={14} color={Colors.primary} />
             </TouchableOpacity>
           )}
         </View>
       </View>
 
-      {/* About section */}
+      {/* About */}
       <Text style={styles.sectionLabel}>About</Text>
       <View style={styles.card}>
         <View style={styles.row}>
@@ -141,8 +213,8 @@ export default function SettingsScreen() {
       </View>
 
       <Text style={styles.footer}>
-        Reminders are scheduled locally on your device.{'\n'}
-        No data is sent to any server.
+        All data is encrypted in transit and stored in your private Supabase account.{'\n'}
+        Reminders are scheduled locally on your device.
       </Text>
     </ScrollView>
   );
@@ -185,30 +257,28 @@ const styles = StyleSheet.create({
     gap: 12,
     flex: 1,
   },
-  rowLabel: {
-    fontSize: 15,
-    color: Colors.text,
-    fontWeight: '500',
-  },
-  rowSubtext: {
-    fontSize: 12,
-    color: Colors.textSecondary,
-    marginTop: 1,
-  },
-  rowValue: {
-    fontSize: 14,
-    color: Colors.textSecondary,
-  },
-  divider: {
-    height: 1,
-    backgroundColor: Colors.border,
-    marginLeft: 48,
-  },
-  timeInputRow: {
-    flexDirection: 'row',
+  avatarCircle: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: Colors.primary,
     alignItems: 'center',
-    gap: 6,
+    justifyContent: 'center',
   },
+  rowLabel: { fontSize: 15, color: Colors.text, fontWeight: '500' },
+  rowSub: { fontSize: 12, color: Colors.textSecondary, marginTop: 1 },
+  rowValue: { fontSize: 14, color: Colors.textSecondary },
+  divider: { height: 1, backgroundColor: Colors.border, marginLeft: 16 },
+  syncBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: Colors.primaryLight,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  syncBtnDisabled: { opacity: 0.5 },
+  timeInputRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   timeInput: {
     borderWidth: 1.5,
     borderColor: Colors.primary,
@@ -226,26 +296,15 @@ const styles = StyleSheet.create({
     paddingVertical: 7,
     borderRadius: 8,
   },
-  saveTimeBtnText: {
-    color: Colors.white,
-    fontWeight: '700',
-    fontSize: 13,
-  },
-  timeDisplay: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  timeDisplayText: {
-    fontSize: 15,
-    color: Colors.primary,
-    fontWeight: '600',
-  },
+  saveTimeBtnText: { color: Colors.white, fontWeight: '700', fontSize: 13 },
+  timeDisplay: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  timeDisplayText: { fontSize: 15, color: Colors.primary, fontWeight: '600' },
   footer: {
     fontSize: 12,
     color: Colors.textDisabled,
     textAlign: 'center',
     marginTop: 24,
     lineHeight: 18,
+    paddingBottom: 8,
   },
 });

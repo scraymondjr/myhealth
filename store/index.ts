@@ -3,6 +3,7 @@ import { persist, createJSONStorage } from 'zustand/middleware';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Goal, ProgressEntry, AppSettings, Reminder } from '../types';
 import { format } from 'date-fns';
+import { pushGoal, removeGoal, pushProgressEntry, pullAll } from './sync';
 
 function generateId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
@@ -16,24 +17,32 @@ interface HealthStore {
   goals: Goal[];
   progressEntries: ProgressEntry[];
   settings: AppSettings;
+  /** Tracks whether a sync is in-flight (for UI indicator) */
+  syncing: boolean;
+  /** ISO timestamp of last successful pull from Supabase */
+  lastSyncedAt: string | null;
 
-  // Goal actions
-  addGoal: (goal: Omit<Goal, 'id' | 'createdAt'>) => Goal;
-  updateGoal: (id: string, updates: Partial<Goal>) => void;
+  // ── Goal actions ────────────────────────────────────────────────────────────
+  addGoal: (goal: Omit<Goal, 'id' | 'createdAt'>, userId?: string) => Goal;
+  updateGoal: (id: string, updates: Partial<Goal>, userId?: string) => void;
   deleteGoal: (id: string) => void;
 
-  // Progress actions
-  logProgress: (goalId: string, amount: number, notes?: string) => void;
-  markComplete: (goalId: string, date?: string) => void;
-  unmarkComplete: (goalId: string, date?: string) => void;
+  // ── Progress actions ────────────────────────────────────────────────────────
+  logProgress: (goalId: string, amount: number, notes?: string, userId?: string) => void;
+  markComplete: (goalId: string, date?: string, userId?: string) => void;
+  unmarkComplete: (goalId: string, date?: string, userId?: string) => void;
 
-  // Selectors
+  // ── Sync ────────────────────────────────────────────────────────────────────
+  /** Pull everything from Supabase and replace local state */
+  pullFromRemote: (userId: string) => Promise<void>;
+
+  // ── Selectors ───────────────────────────────────────────────────────────────
   getTodayProgress: (goalId: string) => ProgressEntry | undefined;
   getProgressForDate: (goalId: string, date: string) => ProgressEntry | undefined;
   getCompletedDates: (goalId: string) => string[];
   getActiveGoals: () => Goal[];
 
-  // Settings
+  // ── Settings ────────────────────────────────────────────────────────────────
   updateSettings: (updates: Partial<AppSettings>) => void;
 }
 
@@ -42,52 +51,70 @@ export const useHealthStore = create<HealthStore>()(
     (set, get) => ({
       goals: [],
       progressEntries: [],
+      syncing: false,
+      lastSyncedAt: null,
       settings: {
         defaultEndOfDayReminderTime: '20:00',
         notificationsEnabled: true,
       },
 
-      addGoal: (goalData) => {
+      // ── Goals ────────────────────────────────────────────────────────────────
+
+      addGoal: (goalData, userId) => {
         const goal: Goal = {
           ...goalData,
           id: generateId(),
           createdAt: new Date().toISOString(),
         };
-        set((state) => ({ goals: [...state.goals, goal] }));
+        set((s) => ({ goals: [...s.goals, goal] }));
+        if (userId) pushGoal(goal, userId);
         return goal;
       },
 
-      updateGoal: (id, updates) => {
-        set((state) => ({
-          goals: state.goals.map((g) => (g.id === id ? { ...g, ...updates } : g)),
+      updateGoal: (id, updates, userId) => {
+        set((s) => ({
+          goals: s.goals.map((g) => (g.id === id ? { ...g, ...updates } : g)),
         }));
+        if (userId) {
+          const updated = get().goals.find((g) => g.id === id);
+          if (updated) pushGoal(updated, userId);
+        }
       },
 
       deleteGoal: (id) => {
-        set((state) => ({
-          goals: state.goals.filter((g) => g.id !== id),
-          progressEntries: state.progressEntries.filter((p) => p.goalId !== id),
+        set((s) => ({
+          goals: s.goals.filter((g) => g.id !== id),
+          progressEntries: s.progressEntries.filter((p) => p.goalId !== id),
         }));
+        removeGoal(id); // fire-and-forget; always delete remote regardless of auth
       },
 
-      logProgress: (goalId, amount, notes = '') => {
+      // ── Progress ─────────────────────────────────────────────────────────────
+
+      logProgress: (goalId, amount, notes = '', userId) => {
         const date = todayStr();
         const existing = get().getProgressForDate(goalId, date);
         const goal = get().goals.find((g) => g.id === goalId);
+        let updatedEntry: ProgressEntry;
 
         if (existing) {
           const newAmount = existing.amount + amount;
           const completed = goal ? newAmount >= goal.targetAmount : existing.completed;
-          set((state) => ({
-            progressEntries: state.progressEntries.map((p) =>
-              p.id === existing.id
-                ? { ...p, amount: newAmount, completed, notes: notes || p.notes, updatedAt: new Date().toISOString() }
-                : p
+          updatedEntry = {
+            ...existing,
+            amount: newAmount,
+            completed,
+            notes: notes || existing.notes,
+            updatedAt: new Date().toISOString(),
+          };
+          set((s) => ({
+            progressEntries: s.progressEntries.map((p) =>
+              p.id === existing.id ? updatedEntry : p
             ),
           }));
         } else {
           const completed = goal ? amount >= goal.targetAmount : false;
-          const entry: ProgressEntry = {
+          updatedEntry = {
             id: generateId(),
             goalId,
             date,
@@ -96,26 +123,33 @@ export const useHealthStore = create<HealthStore>()(
             notes,
             updatedAt: new Date().toISOString(),
           };
-          set((state) => ({ progressEntries: [...state.progressEntries, entry] }));
+          set((s) => ({ progressEntries: [...s.progressEntries, updatedEntry] }));
         }
+
+        if (userId) pushProgressEntry(updatedEntry, userId);
       },
 
-      markComplete: (goalId, date) => {
+      markComplete: (goalId, date, userId) => {
         const targetDate = date ?? todayStr();
         const existing = get().getProgressForDate(goalId, targetDate);
         const goal = get().goals.find((g) => g.id === goalId);
         const amount = goal?.targetAmount ?? 0;
+        let updatedEntry: ProgressEntry;
 
         if (existing) {
-          set((state) => ({
-            progressEntries: state.progressEntries.map((p) =>
-              p.id === existing.id
-                ? { ...p, completed: true, amount: Math.max(p.amount, amount), updatedAt: new Date().toISOString() }
-                : p
+          updatedEntry = {
+            ...existing,
+            completed: true,
+            amount: Math.max(existing.amount, amount),
+            updatedAt: new Date().toISOString(),
+          };
+          set((s) => ({
+            progressEntries: s.progressEntries.map((p) =>
+              p.id === existing.id ? updatedEntry : p
             ),
           }));
         } else {
-          const entry: ProgressEntry = {
+          updatedEntry = {
             id: generateId(),
             goalId,
             date: targetDate,
@@ -124,46 +158,71 @@ export const useHealthStore = create<HealthStore>()(
             notes: '',
             updatedAt: new Date().toISOString(),
           };
-          set((state) => ({ progressEntries: [...state.progressEntries, entry] }));
+          set((s) => ({ progressEntries: [...s.progressEntries, updatedEntry] }));
         }
+
+        if (userId) pushProgressEntry(updatedEntry, userId);
       },
 
-      unmarkComplete: (goalId, date) => {
+      unmarkComplete: (goalId, date, userId) => {
         const targetDate = date ?? todayStr();
-        set((state) => ({
-          progressEntries: state.progressEntries.map((p) =>
-            p.goalId === goalId && p.date === targetDate
-              ? { ...p, completed: false, updatedAt: new Date().toISOString() }
-              : p
+        const existing = get().getProgressForDate(goalId, targetDate);
+        if (!existing) return;
+        const updatedEntry: ProgressEntry = {
+          ...existing,
+          completed: false,
+          updatedAt: new Date().toISOString(),
+        };
+        set((s) => ({
+          progressEntries: s.progressEntries.map((p) =>
+            p.goalId === goalId && p.date === targetDate ? updatedEntry : p
           ),
         }));
+        if (userId) pushProgressEntry(updatedEntry, userId);
       },
 
-      getTodayProgress: (goalId) => {
-        return get().getProgressForDate(goalId, todayStr());
+      // ── Sync ─────────────────────────────────────────────────────────────────
+
+      pullFromRemote: async (userId) => {
+        set({ syncing: true });
+        const data = await pullAll(userId);
+        if (data) {
+          set({
+            goals: data.goals,
+            progressEntries: data.progressEntries,
+            lastSyncedAt: new Date().toISOString(),
+          });
+        }
+        set({ syncing: false });
       },
 
-      getProgressForDate: (goalId, date) => {
-        return get().progressEntries.find((p) => p.goalId === goalId && p.date === date);
-      },
+      // ── Selectors ─────────────────────────────────────────────────────────────
 
-      getCompletedDates: (goalId) => {
-        return get()
+      getTodayProgress: (goalId) => get().getProgressForDate(goalId, todayStr()),
+
+      getProgressForDate: (goalId, date) =>
+        get().progressEntries.find((p) => p.goalId === goalId && p.date === date),
+
+      getCompletedDates: (goalId) =>
+        get()
           .progressEntries.filter((p) => p.goalId === goalId && p.completed)
-          .map((p) => p.date);
-      },
+          .map((p) => p.date),
 
-      getActiveGoals: () => {
-        return get().goals.filter((g) => g.isActive);
-      },
+      getActiveGoals: () => get().goals.filter((g) => g.isActive),
 
-      updateSettings: (updates) => {
-        set((state) => ({ settings: { ...state.settings, ...updates } }));
-      },
+      updateSettings: (updates) =>
+        set((s) => ({ settings: { ...s.settings, ...updates } })),
     }),
     {
       name: 'myhealth-storage',
       storage: createJSONStorage(() => AsyncStorage),
+      // Don't persist transient sync state
+      partialize: (s) => ({
+        goals: s.goals,
+        progressEntries: s.progressEntries,
+        settings: s.settings,
+        lastSyncedAt: s.lastSyncedAt,
+      }),
     }
   )
 );

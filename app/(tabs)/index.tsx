@@ -10,6 +10,7 @@ import {
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useHealthStore } from '../../store';
+import { useAuthStore } from '../../store/auth';
 import { GoalCard } from '../../components/GoalCard';
 import { EmptyState } from '../../components/EmptyState';
 import { Colors } from '../../constants/colors';
@@ -17,19 +18,23 @@ import { formatDisplayDate } from '../../utils/date';
 
 export default function TodayScreen() {
   const router = useRouter();
+  const userId = useAuthStore((s) => s.user?.id);
   const goals = useHealthStore((s) => s.getActiveGoals());
   const getTodayProgress = useHealthStore((s) => s.getTodayProgress);
   const markComplete = useHealthStore((s) => s.markComplete);
   const unmarkComplete = useHealthStore((s) => s.unmarkComplete);
   const logProgress = useHealthStore((s) => s.logProgress);
+  const pullFromRemote = useHealthStore((s) => s.pullFromRemote);
+  const syncing = useHealthStore((s) => s.syncing);
 
   const completedCount = goals.filter((g) => getTodayProgress(g.id)?.completed).length;
   const todayLabel = formatDisplayDate(new Date());
 
   const [refreshing, setRefreshing] = React.useState(false);
-  function onRefresh() {
+  async function onRefresh() {
     setRefreshing(true);
-    setTimeout(() => setRefreshing(false), 500);
+    if (userId) await pullFromRemote(userId);
+    setRefreshing(false);
   }
 
   return (
@@ -95,9 +100,9 @@ export default function TodayScreen() {
               key={goal.id}
               goal={goal}
               progress={getTodayProgress(goal.id)}
-              onMarkComplete={() => markComplete(goal.id)}
-              onUnmarkComplete={() => unmarkComplete(goal.id)}
-              onLogProgress={(amount, notes) => logProgress(goal.id, amount, notes)}
+              onMarkComplete={() => markComplete(goal.id, undefined, userId)}
+              onUnmarkComplete={() => unmarkComplete(goal.id, undefined, userId)}
+              onLogProgress={(amount, notes) => logProgress(goal.id, amount, notes, userId)}
             />
           ))
         )}

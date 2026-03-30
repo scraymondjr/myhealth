@@ -17,6 +17,7 @@ import {
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useHealthStore, makeDefaultReminder } from '../store';
+import { useAuthStore } from '../store/auth';
 import { Colors } from '../constants/colors';
 import { formatTime, parseTimeInput } from '../utils/date';
 import { scheduleGoalNotifications } from '../utils/notifications';
@@ -31,6 +32,7 @@ export function GoalFormScreen({ goal }: Props) {
   const isNew = !goal;
   const router = useRouter();
 
+  const userId = useAuthStore((s) => s.user?.id);
   const addGoal = useHealthStore((s) => s.addGoal);
   const updateGoal = useHealthStore((s) => s.updateGoal);
   const settings = useHealthStore((s) => s.settings);
@@ -86,10 +88,10 @@ export function GoalFormScreen({ goal }: Props) {
     };
 
     if (isNew) {
-      const newGoal = addGoal(goalData);
+      const newGoal = addGoal(goalData, userId);
       await scheduleGoalNotifications(newGoal);
     } else {
-      updateGoal(goal!.id, goalData);
+      updateGoal(goal!.id, goalData, userId);
       await scheduleGoalNotifications({ ...goal!, ...goalData });
     }
 

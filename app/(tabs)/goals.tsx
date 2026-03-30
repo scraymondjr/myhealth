@@ -11,12 +11,14 @@ import {
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useHealthStore } from '../../store';
+import { useAuthStore } from '../../store/auth';
 import { Colors } from '../../constants/colors';
 import { EmptyState } from '../../components/EmptyState';
 import { formatTime } from '../../utils/date';
 
 export default function GoalsScreen() {
   const router = useRouter();
+  const userId = useAuthStore((s) => s.user?.id);
   const goals = useHealthStore((s) => s.goals);
   const updateGoal = useHealthStore((s) => s.updateGoal);
   const deleteGoal = useHealthStore((s) => s.deleteGoal);
@@ -98,7 +100,7 @@ export default function GoalsScreen() {
                 <View style={styles.cardActions}>
                   <TouchableOpacity
                     style={styles.actionBtn}
-                    onPress={() => updateGoal(goal.id, { isActive: !goal.isActive })}
+                    onPress={() => updateGoal(goal.id, { isActive: !goal.isActive }, userId)}
                   >
                     <Ionicons
                       name={goal.isActive ? 'pause-circle-outline' : 'play-circle-outline'}
